@@ -1,0 +1,82 @@
+import torch
+from transformers import BertTokenizer, BertModel, BertForSequenceClassification, Trainer, TrainingArguments
+from sklearn.cluster import KMeans
+from sentence_transformers import SentenceTransformer
+import pandas as pd
+
+# Load a pre-trained BERT model and tokenizer
+model_name = 'bert-base-uncased'
+tokenizer = BertTokenizer.from_pretrained(model_name)
+model = BertForSequenceClassification.from_pretrained(model_name)
+
+# Load your mixed dataset
+# Assuming you have a dataset with 'text' and 'label' columns
+data = pd.read_csv('your_dataset.csv')
+
+# Tokenize the input text
+def tokenize_function(text):
+    return tokenizer(text, padding="max_length", truncation=True)
+
+train_texts = list(data['text'])
+train_labels = list(data['label'])
+
+train_encodings = tokenizer(train_texts, truncation=True, padding=True, max_length=128)
+train_labels = torch.tensor(train_labels)
+
+# Create a PyTorch dataset
+class CustomDataset(torch.utils.data.Dataset):
+    def __init__(self, encodings, labels):
+        self.encodings = encodings
+        self.labels = labels
+    
+    def __getitem__(self, idx):
+        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+        item['labels'] = torch.tensor(self.labels[idx])
+        return item
+    
+    def __len__(self):
+        return len(self.labels)
+
+train_dataset = CustomDataset(train_encodings, train_labels)
+
+# Fine-tune BERT model
+training_args = TrainingArguments(
+    output_dir='./results',
+    num_train_epochs=3,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    warmup_steps=500,
+    weight_decay=0.01,
+    logging_dir='./logs',
+    logging_steps=10,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=None  # you can add an evaluation dataset if available
+)
+
+trainer.train()
+
+# After fine-tuning, use BERT embeddings for phrase-level topic modeling
+sentence_model = SentenceTransformer(model_name)
+
+# Encode sentences into embeddings
+sentence_embeddings = sentence_model.encode(train_texts)
+
+# Apply KMeans clustering to generate topics
+num_clusters = 10  # You can change the number of clusters
+clustering_model = KMeans(n_clusters=num_clusters)
+clustering_model.fit(sentence_embeddings)
+cluster_assignment = clustering_model.labels_
+
+# Assign cluster labels to the original texts
+data['topic'] = cluster_assignment
+
+# Display the top phrases for each topic
+for i in range(num_clusters):
+    topic_data = data[data['topic'] == i]
+    print(f"Topic {i}:")
+    print(topic_data['text'].head(10).tolist())
